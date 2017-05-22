@@ -81,6 +81,7 @@ func run(svc *sqs.SQS, h Handler, messages []*sqs.Message) {
 func handleMessage(svc *sqs.SQS, m *sqs.Message, h Handler) error {
 	err := h.HandleMessage(m)
 	if err != nil {
+		log.Println(err)
 		return err
 	}
 
