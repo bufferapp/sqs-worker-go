@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"fmt"
 	"log"
 	"sync"
 
@@ -19,6 +20,21 @@ func (f HandlerFunc) HandleMessage(msg *sqs.Message) error {
 // Handler interface
 type Handler interface {
 	HandleMessage(msg *sqs.Message) error
+}
+
+// InvalidMessageError for message that can't be processed and should be deleted
+type InvalidMessageError struct {
+	SQSMessage string
+	LogMessage string
+}
+
+func (e InvalidMessageError) Error() string {
+	return fmt.Sprintf("[Invalid Message: %s] %s", e.SQSMessage, e.LogMessage)
+}
+
+// NewInvalidMessageError to create new error for messages that should be deleted
+func NewInvalidMessageError(SQSMessage, logMessage string) InvalidMessageError {
+	return InvalidMessageError{SQSMessage: SQSMessage, LogMessage: logMessage}
 }
 
 // Exported Variables
