@@ -96,8 +96,11 @@ func run(svc *sqs.SQS, h Handler, messages []*sqs.Message) {
 
 func handleMessage(svc *sqs.SQS, m *sqs.Message, h Handler) error {
 	err := h.HandleMessage(m)
-	if err != nil {
-		log.Println(err)
+	if _, ok := err.(InvalidMessageError); ok {
+		// Invalid message encountered. Swallow the error and delete the message
+		log.Println(err.Error())
+	} else if err != nil {
+		// Message is valid but there is an error proccesing it. Keeping it in the queue or send to DLQ.
 		return err
 	}
 
