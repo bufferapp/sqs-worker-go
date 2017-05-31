@@ -81,8 +81,9 @@ func NewService(n string) (*Service, error) {
 	}
 
 	builder := &Service{
-		JobSQS:    s,
-		JobSQSURL: aws.StringValue(resultURL.QueueUrl),
+		AWSSession: sess,
+		JobSQS:     s,
+		JobSQSURL:  aws.StringValue(resultURL.QueueUrl),
 	}
 
 	return builder, nil
