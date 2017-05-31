@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/firehose"
 	"github.com/aws/aws-sdk-go/service/sqs"
 )
 
@@ -37,26 +39,60 @@ func NewInvalidMessageError(SQSMessage, logMessage string) InvalidMessageError {
 	return InvalidMessageError{SQSMessage: SQSMessage, LogMessage: logMessage}
 }
 
-// Exported Variables
+// Service works through the job SQS queue
+type Service struct {
+	AWSSession         *session.Session
+	BackupFirehose     *firehose.Firehose
+	BackupFirehoseName string
+	JobSQS             *sqs.SQS
+	JobSQSURL          string
+}
+
+// Exported variables
 var (
-	// what is the queue url we are connecting to, Defaults to empty
-	QueueURL string
-	// The maximum number of messages to return. Amazon SQS never returns more messages
-	// than this value (however, fewer messages might be returned). Valid values
-	// are 1 to 10. Default is 10.
+	// MaxNumberOfMessage at one poll
 	MaxNumberOfMessage int64 = 10
-	// The duration (in seconds) for which the call waits for a message to arrive
-	// in the queue before returning. If a message is available, the call returns
-	// sooner than WaitTimeSeconds.
+	// WaitTimeSecond for each poll
 	WaitTimeSecond int64 = 20
 )
 
+// Backup to set up Firehose backup option
+func (s *Service) Backup(n string) *Service {
+	s.BackupFirehose = firehose.New(s.AWSSession)
+	s.BackupFirehoseName = n
+
+	return s
+}
+
+// NewService creates new worker service
+func NewService(n string) (*Service, error) {
+	// Setting up SQS connection
+	sess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	}))
+	s := sqs.New(sess)
+
+	resultURL, err := s.GetQueueUrl(&sqs.GetQueueUrlInput{
+		QueueName: aws.String(n),
+	})
+	if err != nil {
+		log.Println("Can't get the SQS queue")
+		return nil, err
+	}
+
+	builder := &Service{
+		JobSQS:    s,
+		JobSQSURL: aws.StringValue(resultURL.QueueUrl),
+	}
+
+	return builder, nil
+}
+
 // Start starts the polling and will continue polling till the application is forcibly stopped
-func Start(svc *sqs.SQS, h Handler) {
+func (s *Service) Start(h Handler) {
 	for {
-		// log.Println("worker: Start Polling")
 		params := &sqs.ReceiveMessageInput{
-			QueueUrl:            aws.String(QueueURL), // Required
+			QueueUrl:            aws.String(s.JobSQSURL), // Required
 			MaxNumberOfMessages: aws.Int64(MaxNumberOfMessage),
 			MessageAttributeNames: []*string{
 				aws.String("All"), // Required
@@ -64,19 +100,19 @@ func Start(svc *sqs.SQS, h Handler) {
 			WaitTimeSeconds: aws.Int64(WaitTimeSecond),
 		}
 
-		resp, err := svc.ReceiveMessage(params)
+		resp, err := s.JobSQS.ReceiveMessage(params)
 		if err != nil {
 			log.Println(err)
 			continue
 		}
 		if len(resp.Messages) > 0 {
-			run(svc, h, resp.Messages)
+			run(s, h, resp.Messages)
 		}
 	}
 }
 
 // poll launches goroutine per received message and wait for all message to be processed
-func run(svc *sqs.SQS, h Handler, messages []*sqs.Message) {
+func run(s *Service, h Handler, messages []*sqs.Message) {
 	numMessages := len(messages)
 
 	var wg sync.WaitGroup
@@ -85,7 +121,7 @@ func run(svc *sqs.SQS, h Handler, messages []*sqs.Message) {
 		go func(m *sqs.Message) {
 			// launch goroutine
 			defer wg.Done()
-			if err := handleMessage(svc, m, h); err != nil {
+			if err := handleMessage(s, m, h); err != nil {
 				log.Println(err.Error())
 			}
 		}(messages[i])
@@ -94,21 +130,43 @@ func run(svc *sqs.SQS, h Handler, messages []*sqs.Message) {
 	wg.Wait()
 }
 
-func handleMessage(svc *sqs.SQS, m *sqs.Message, h Handler) error {
+func (s *Service) shouldBackup() bool {
+	return (s.BackupFirehose != nil && s.BackupFirehoseName != "")
+}
+
+func handleMessage(s *Service, m *sqs.Message, h Handler) error {
 	err := h.HandleMessage(m)
 	if _, ok := err.(InvalidMessageError); ok {
 		// Invalid message encountered. Swallow the error and delete the message
 		log.Println(err.Error())
 	} else if err != nil {
-		// Message is valid but there is an error proccesing it. Keeping it in the queue or send to DLQ.
+		// Message is valid but there is an error proccesing it. Keeping it in the
+		// queue or send to DLQ to try again
 		return err
 	}
 
-	params := &sqs.DeleteMessageInput{
-		QueueUrl:      aws.String(QueueURL), // Required
-		ReceiptHandle: m.ReceiptHandle,      // Required
+	// Backup to Firehose option is set
+	if s.shouldBackup() {
+		params := &firehose.PutRecordInput{
+			DeliveryStreamName: aws.String(s.BackupFirehoseName), // Required
+			Record: &firehose.Record{ // Required
+				Data: []byte(*m.Body),
+			},
+		}
+		_, err = s.BackupFirehose.PutRecord(params)
+
+		if err != nil {
+			// Swallow the backup error and go on deleting the message
+			log.Println(err.Error())
+		}
 	}
-	_, err = svc.DeleteMessage(params)
+
+	// Delete the processed (or invalid) message
+	params := &sqs.DeleteMessageInput{
+		QueueUrl:      aws.String(s.JobSQSURL), // Required
+		ReceiptHandle: m.ReceiptHandle,         // Required
+	}
+	_, err = s.JobSQS.DeleteMessage(params)
 	if err != nil {
 		return err
 	}
