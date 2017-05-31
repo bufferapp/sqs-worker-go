@@ -151,7 +151,7 @@ func handleMessage(s *Service, m *sqs.Message, h Handler) error {
 		params := &firehose.PutRecordInput{
 			DeliveryStreamName: aws.String(s.BackupFirehoseName), // Required
 			Record: &firehose.Record{ // Required
-				Data: []byte(*m.Body),
+				Data: []byte(*m.Body + "\n"),
 			},
 		}
 		_, err = s.BackupFirehose.PutRecord(params)
