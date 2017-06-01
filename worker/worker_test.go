@@ -67,6 +67,7 @@ func teardown() {
 func TestMain(m *testing.M) {
 	setup()
 	// Wait for the SQS queue to be created
+	// FIXME: We should find a better way doing this. Maybe through mocking
 	time.Sleep(15000 * time.Millisecond)
 	retCode := m.Run()
 	teardown()
