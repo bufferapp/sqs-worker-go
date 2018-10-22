@@ -3,7 +3,10 @@ package worker
 import (
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -46,6 +49,7 @@ type Service struct {
 	BackupFirehoseName string
 	JobSQS             *sqs.SQS
 	JobSQSURL          string
+	stop               chan bool
 }
 
 // Exported variables
@@ -84,30 +88,52 @@ func NewService(n string) (*Service, error) {
 		AWSSession: sess,
 		JobSQS:     s,
 		JobSQSURL:  aws.StringValue(resultURL.QueueUrl),
+		stop:       make(chan bool),
 	}
 
 	return builder, nil
 }
 
+// Stop will stop the service gracefully
+func (s *Service) Stop() {
+	close(s.stop)
+}
+
 // Start starts the polling and will continue polling till the application is forcibly stopped
 func (s *Service) Start(h Handler) {
-	for {
-		params := &sqs.ReceiveMessageInput{
-			QueueUrl:            aws.String(s.JobSQSURL), // Required
-			MaxNumberOfMessages: aws.Int64(MaxNumberOfMessage),
-			MessageAttributeNames: []*string{
-				aws.String("All"), // Required
-			},
-			WaitTimeSeconds: aws.Int64(WaitTimeSecond),
-		}
 
-		resp, err := s.JobSQS.ReceiveMessage(params)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		if len(resp.Messages) > 0 {
-			run(s, h, resp.Messages)
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+		log.Printf("Received kill signal %s, waiting for all messages to be processed.", <-ch)
+		s.Stop()
+	}()
+
+	for {
+
+		select {
+		case <-s.stop:
+			log.Printf("Finished processing, stopping service.")
+			return
+		default:
+
+			params := &sqs.ReceiveMessageInput{
+				QueueUrl:            aws.String(s.JobSQSURL), // Required
+				MaxNumberOfMessages: aws.Int64(MaxNumberOfMessage),
+				MessageAttributeNames: []*string{
+					aws.String("All"), // Required
+				},
+				WaitTimeSeconds: aws.Int64(WaitTimeSecond),
+			}
+
+			resp, err := s.JobSQS.ReceiveMessage(params)
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+			if len(resp.Messages) > 0 {
+				run(s, h, resp.Messages)
+			}
 		}
 	}
 }
