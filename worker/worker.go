@@ -66,9 +66,15 @@ func (s *Service) Backup(n string) *Service {
 
 // NewService creates new worker service
 func NewService(n string) (*Service, error) {
+	return NewServiceWithConfig(n, aws.Config{})
+}
+
+// NewServiceWithConfig creates a new worker service with the specified AWS config
+func NewServiceWithConfig(n string, config aws.Config) (*Service, error) {
 	// Setting up SQS connection
 	sess := session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
+		Config:            config,
 	}))
 	s := sqs.New(sess)
 
